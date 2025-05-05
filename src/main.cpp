@@ -19,12 +19,14 @@ I2C i2c(PB_11, PB_10);  // I2C2: SDA = PB11, SCL = PB10
 #define OUTZ_L_G    0x26  // Gyro Z-axis (low byte)
 #define OUTZ_H_G    0x27  // Gyro Z-axis (high byte)
 
-#define FFT_SIZE 60
-//20 samples per second, we store in intervals of 3 seconds
-#define SAMPLE_RATE 20f 
+#define FFT_SIZE 78
+//26 samples per second, we store in intervals of 3 seconds
+#define SAMPLE_RATE 26f 
 //Our max sampling rate required is 7Hz
 //need double that for Sampling Theorem
-//but we make it slightly greater for a margin of error
+//for a minimum rate of 14Hz, however
+//the LSM6DSL data rate closest is 26Hz
+#define SAMPLE_DURATION 3000ms
 
 // Write a value to a register
 void write_register(uint8_t reg, uint8_t value) {
@@ -60,42 +62,59 @@ int main() {
       while (1) { /* Stop here */ }
   }
   
-  // Configure the accelerometer (104 Hz, ±2g range)
-  write_register(CTRL1_XL, 0x40);
-  printf("Accelerometer configured: 104 Hz, ±2g range\r\n");
+  // Configure the accelerometer (26 Hz, ±2g range)
+  write_register(CTRL1_XL, 0x20);
+  printf("Accelerometer configured: 26 Hz, ±2g range\r\n");
   
-  // Configure the gyroscope (104 Hz, ±250 dps range)
-  write_register(CTRL2_G, 0x40);
-  printf("Gyroscope configured: 104 Hz, ±250 dps range\r\n");
+  // Configure the gyroscope (26 Hz, ±250 dps range)
+  write_register(CTRL2_G, 0x20);
+  printf("Gyroscope configured: 26 Hz, ±250 dps range\r\n");
   
   // Conversion factors for ±2g and ±250 dps
   const float ACC_SENSITIVITY = 0.061f;  // mg/LSB for ±2g range
   const float GYRO_SENSITIVITY = 8.75f;  // mdps/LSB for ±250 dps range
   
+  //tentative idea, collect data on each axis, and do an fft on each
+  //and if any are within the ranges, we signal it. Or we can aggregate/avg
+  //all 3 axis. Unsure which is better. imo aggregating is better. Another
+  //idea is sensor fusion, to combine data of all 6.
+
+
   // Main loop
   while (1) {
-    // Read raw accelerometer values
-    int16_t acc_x_raw = read_16bit_value(OUTX_L_XL, OUTX_H_XL);
-    int16_t acc_y_raw = read_16bit_value(OUTY_L_XL, OUTY_H_XL);
-    int16_t acc_z_raw = read_16bit_value(OUTZ_L_XL, OUTZ_H_XL);
-    
-    // Read raw gyroscope values
-    int16_t gyro_x_raw = read_16bit_value(OUTX_L_G, OUTX_H_G);
-    int16_t gyro_y_raw = read_16bit_value(OUTY_L_G, OUTY_H_G);
-    int16_t gyro_z_raw = read_16bit_value(OUTZ_L_G, OUTZ_H_G);
-    
-    // Convert accelerometer values from raw to g
-    float acc_x_g = acc_x_raw * ACC_SENSITIVITY / 1000.0f;
-    float acc_y_g = acc_y_raw * ACC_SENSITIVITY / 1000.0f;
-    float acc_z_g = acc_z_raw * ACC_SENSITIVITY / 1000.0f;
-    
-    // Convert gyroscope values from raw to dps
-    float gyro_x_dps = gyro_x_raw * GYRO_SENSITIVITY / 1000.0f;
-    float gyro_y_dps = gyro_y_raw * GYRO_SENSITIVITY / 1000.0f;
-    float gyro_z_dps = gyro_z_raw * GYRO_SENSITIVITY / 1000.0f;
-    
-    // Wait before next sample
-    ThisThread::sleep_for(3000ms);
+    float input_fft[FFT_SIZE];
+    float fft_out[FFT_SIZE];
+    //grab 78 data points, capture 3 second intervals of data with 26Hz sampling rate
+    for(int i=0;i<FFT_SIZE;i++){
+      // Read raw accelerometer values
+      int16_t acc_x_raw = read_16bit_value(OUTX_L_XL, OUTX_H_XL);
+      int16_t acc_y_raw = read_16bit_value(OUTY_L_XL, OUTY_H_XL);
+      int16_t acc_z_raw = read_16bit_value(OUTZ_L_XL, OUTZ_H_XL);
+      
+      // Read raw gyroscope values
+      int16_t gyro_x_raw = read_16bit_value(OUTX_L_G, OUTX_H_G);
+      int16_t gyro_y_raw = read_16bit_value(OUTY_L_G, OUTY_H_G);
+      int16_t gyro_z_raw = read_16bit_value(OUTZ_L_G, OUTZ_H_G);
+      
+      // Convert accelerometer values from raw to g
+      float acc_x_g = acc_x_raw * ACC_SENSITIVITY / 1000.0f;
+      float acc_y_g = acc_y_raw * ACC_SENSITIVITY / 1000.0f;
+      float acc_z_g = acc_z_raw * ACC_SENSITIVITY / 1000.0f;
+      
+      // Convert gyroscope values from raw to dps
+      float gyro_x_dps = gyro_x_raw * GYRO_SENSITIVITY / 1000.0f;
+      float gyro_y_dps = gyro_y_raw * GYRO_SENSITIVITY / 1000.0f;
+      float gyro_z_dps = gyro_z_raw * GYRO_SENSITIVITY / 1000.0f;
+
+      //example code of adding for fft input
+      input_fft[i] = gyro_z_dps; 
+    }
+    //FFT code here
+    for (int i = 0; i < FFT_SIZE; i++) {
+      printf("%f ",input_fft[i]);
+    }
+    printf("\n");
+    ThisThread::sleep_for(1000ms);
   }
 }
 
