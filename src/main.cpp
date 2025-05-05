@@ -1,10 +1,111 @@
 #include <mbed.h>
 
+I2C i2c(PB_11, PB_10);  // I2C2: SDA = PB11, SCL = PB10
+
+#define LSM6DSL_ADDR (0x6A << 1)  // Equals 0xD4
+#define WHO_AM_I    0x0F  // ID register - should return 0x6A
+#define CTRL1_XL    0x10  // Accelerometer control register to configure range
+#define CTRL2_G     0x11  // Gyroscope control register to configure range
+#define OUTX_L_XL   0x28  // XL X-axis (low byte)
+#define OUTX_H_XL   0x29  // XL X-axis (high byte)
+#define OUTY_L_XL   0x2A  // XL Y-axis (low byte)
+#define OUTY_H_XL   0x2B  // XL Y-axis (high byte)
+#define OUTZ_L_XL   0x2C  // XL Z-axis (low byte)
+#define OUTZ_H_XL   0x2D  // XL Z-axis (high byte)
+#define OUTX_L_G    0x22  // Gyro X-axis (low byte)
+#define OUTX_H_G    0x23  // Gyro X-axis (high byte)
+#define OUTY_L_G    0x24  // Gyro Y-axis (low byte)
+#define OUTY_H_G    0x25  // Gyro Y-axis (high byte)
+#define OUTZ_L_G    0x26  // Gyro Z-axis (low byte)
+#define OUTZ_H_G    0x27  // Gyro Z-axis (high byte)
+
+#define FFT_SIZE 60
+//20 samples per second, we store in intervals of 3 seconds
+#define SAMPLE_RATE 20f 
+//Our max sampling rate required is 7Hz
+//need double that for Sampling Theorem
+//but we make it slightly greater for a margin of error
+
+// Write a value to a register
+void write_register(uint8_t reg, uint8_t value) {
+  char data[2] = {(char)reg, (char)value};
+  i2c.write(LSM6DSL_ADDR, data, 2);
+}
+
+// Read a value from a register
+uint8_t read_register(uint8_t reg) {
+  char data = reg;
+  i2c.write(LSM6DSL_ADDR, &data, 1, true); // No stop
+  i2c.read(LSM6DSL_ADDR, &data, 1);
+  return (uint8_t)data;
+}
+
+// Read a 16-bit value (combines low and high byte registers)
+int16_t read_16bit_value(uint8_t low_reg, uint8_t high_reg) {
+  char low_byte = read_register(low_reg);
+  char high_byte = read_register(high_reg);
+  return (high_byte << 8) | low_byte;
+}
+
 int main() {
-
-  // put your setup code here, to run once:
-
-  while(1) {
-    // put your main code here, to run repeatedly:
+  // Setup I2C at 400kHz
+  i2c.frequency(400000);
+  
+  // Check if sensor is connected
+  uint8_t id = read_register(WHO_AM_I);
+  printf("WHO_AM_I = 0x%02X (Expected: 0x6A)\r\n", id);
+  
+  if (id != 0x6A) {
+      printf("Error: LSM6DSL sensor not found!\r\n");
+      while (1) { /* Stop here */ }
+  }
+  
+  // Configure the accelerometer (104 Hz, ±2g range)
+  write_register(CTRL1_XL, 0x40);
+  printf("Accelerometer configured: 104 Hz, ±2g range\r\n");
+  
+  // Configure the gyroscope (104 Hz, ±250 dps range)
+  write_register(CTRL2_G, 0x40);
+  printf("Gyroscope configured: 104 Hz, ±250 dps range\r\n");
+  
+  // Conversion factors for ±2g and ±250 dps
+  const float ACC_SENSITIVITY = 0.061f;  // mg/LSB for ±2g range
+  const float GYRO_SENSITIVITY = 8.75f;  // mdps/LSB for ±250 dps range
+  
+  // Main loop
+  while (1) {
+    // Read raw accelerometer values
+    int16_t acc_x_raw = read_16bit_value(OUTX_L_XL, OUTX_H_XL);
+    int16_t acc_y_raw = read_16bit_value(OUTY_L_XL, OUTY_H_XL);
+    int16_t acc_z_raw = read_16bit_value(OUTZ_L_XL, OUTZ_H_XL);
+    
+    // Read raw gyroscope values
+    int16_t gyro_x_raw = read_16bit_value(OUTX_L_G, OUTX_H_G);
+    int16_t gyro_y_raw = read_16bit_value(OUTY_L_G, OUTY_H_G);
+    int16_t gyro_z_raw = read_16bit_value(OUTZ_L_G, OUTZ_H_G);
+    
+    // Convert accelerometer values from raw to g
+    float acc_x_g = acc_x_raw * ACC_SENSITIVITY / 1000.0f;
+    float acc_y_g = acc_y_raw * ACC_SENSITIVITY / 1000.0f;
+    float acc_z_g = acc_z_raw * ACC_SENSITIVITY / 1000.0f;
+    
+    // Convert gyroscope values from raw to dps
+    float gyro_x_dps = gyro_x_raw * GYRO_SENSITIVITY / 1000.0f;
+    float gyro_y_dps = gyro_y_raw * GYRO_SENSITIVITY / 1000.0f;
+    float gyro_z_dps = gyro_z_raw * GYRO_SENSITIVITY / 1000.0f;
+    
+    // Wait before next sample
+    ThisThread::sleep_for(3000ms);
   }
 }
+
+/*
+// Print converted values using printf
+    printf("Accel [g]: X=%+6.3f, Y=%+6.3f, Z=%+6.3f | Gyro [dps]: X=%+7.2f, Y=%+7.2f, Z=%+7.2f\r\n", 
+          acc_x_g, acc_y_g, acc_z_g, gyro_x_dps, gyro_y_dps, gyro_z_dps);
+    
+    // Output Teleplot format directly with printf
+    printf(">acc_x:%.3f\n>acc_y:%.3f\n>acc_z:%.3f\n"">gyro_x:%.2f\n>gyro_y:%.2f\n>gyro_z:%.2f\n",
+            acc_x_g, acc_y_g, acc_z_g, gyro_x_dps, gyro_y_dps, gyro_z_dps);
+    
+*/

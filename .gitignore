@@ -3,3 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+cache
+idf-driver-esp32-usb-jtag-2021-07-15.zip
+idf-env.exe
