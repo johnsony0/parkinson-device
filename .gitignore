@@ -4,6 +4,8 @@
 .vscode/launch.json
 .vscode/ipch
 
+lib/CMSIS-DSP-main
+
 cache
 idf-driver-esp32-usb-jtag-2021-07-15.zip
 idf-env.exe

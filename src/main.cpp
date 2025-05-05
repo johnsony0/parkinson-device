@@ -1,4 +1,5 @@
 #include <mbed.h>
+#include <arm_math.h>
 
 I2C i2c(PB_11, PB_10);  // I2C2: SDA = PB11, SCL = PB10
 
@@ -19,14 +20,16 @@ I2C i2c(PB_11, PB_10);  // I2C2: SDA = PB11, SCL = PB10
 #define OUTZ_L_G    0x26  // Gyro Z-axis (low byte)
 #define OUTZ_H_G    0x27  // Gyro Z-axis (high byte)
 
-#define FFT_SIZE 78
+#define FFT_SIZE 312
 //26 samples per second, we store in intervals of 3 seconds
-#define SAMPLE_RATE 26f 
+#define SAMPLE_RATE 104.0f
 //Our max sampling rate required is 7Hz
 //need double that for Sampling Theorem
 //for a minimum rate of 14Hz, however
 //the LSM6DSL data rate closest is 26Hz
 #define SAMPLE_DURATION 3000ms
+
+arm_rfft_fast_instance_f32 FFT_Instance;
 
 // Write a value to a register
 void write_register(uint8_t reg, uint8_t value) {
@@ -49,6 +52,22 @@ int16_t read_16bit_value(uint8_t low_reg, uint8_t high_reg) {
   return (high_byte << 8) | low_byte;
 }
 
+void show_results(float *magnitude) {
+  float32_t resolution = SAMPLE_RATE / FFT_SIZE;
+  float32_t maxValue;
+  uint32_t maxIndex;
+
+  arm_max_f32(magnitude, FFT_SIZE/2, &maxValue, &maxIndex);
+  
+  printf("Max magnitude: %.1f at bin %lu (%.2f Hz)\r\n", 
+  maxValue, maxIndex, maxIndex * resolution);
+
+  printf("Bin\tFreq (Hz)\tMagnitude\n");
+ for (int i = 0; i < FFT_SIZE; i++) { // Show bins for debugging
+  printf(" %d\t%.2f\t\t%.4f\n",i, i * resolution, magnitude[i]);
+ }
+}
+
 int main() {
   // Setup I2C at 400kHz
   i2c.frequency(400000);
@@ -56,18 +75,18 @@ int main() {
   // Check if sensor is connected
   uint8_t id = read_register(WHO_AM_I);
   printf("WHO_AM_I = 0x%02X (Expected: 0x6A)\r\n", id);
-  
+
   if (id != 0x6A) {
-      printf("Error: LSM6DSL sensor not found!\r\n");
-      while (1) { /* Stop here */ }
+    printf("Error: LSM6DSL sensor not found!\r\n");
+    while (1) { /* Stop here */ }
   }
-  
-  // Configure the accelerometer (26 Hz, ±2g range)
-  write_register(CTRL1_XL, 0x20);
+
+  // Configure the accelerometer (104 Hz, ±2g range)
+  write_register(CTRL1_XL, 0x40);
   printf("Accelerometer configured: 26 Hz, ±2g range\r\n");
   
-  // Configure the gyroscope (26 Hz, ±250 dps range)
-  write_register(CTRL2_G, 0x20);
+  // Configure the gyroscope (104 Hz, ±250 dps range)
+  write_register(CTRL2_G, 0x40);
   printf("Gyroscope configured: 26 Hz, ±250 dps range\r\n");
   
   // Conversion factors for ±2g and ±250 dps
@@ -79,12 +98,16 @@ int main() {
   //all 3 axis. Unsure which is better. imo aggregating is better. Another
   //idea is sensor fusion, to combine data of all 6.
 
+  // Initialize the FFT instance
+  arm_status status = arm_rfft_fast_init_f32(&FFT_Instance, FFT_SIZE);
+  
 
   // Main loop
   while (1) {
-    float input_fft[FFT_SIZE];
-    float fft_out[FFT_SIZE];
-    //grab 78 data points, capture 3 second intervals of data with 26Hz sampling rate
+    float32_t fft_input[FFT_SIZE];
+    float32_t fft_out[FFT_SIZE];
+    float32_t magnitude[FFT_SIZE/2];
+    //grab FFT_SIZE data points, capture 3 second intervals of data with 104Hz sampling rate
     for(int i=0;i<FFT_SIZE;i++){
       // Read raw accelerometer values
       int16_t acc_x_raw = read_16bit_value(OUTX_L_XL, OUTX_H_XL);
@@ -97,34 +120,31 @@ int main() {
       int16_t gyro_z_raw = read_16bit_value(OUTZ_L_G, OUTZ_H_G);
       
       // Convert accelerometer values from raw to g
-      float acc_x_g = acc_x_raw * ACC_SENSITIVITY / 1000.0f;
-      float acc_y_g = acc_y_raw * ACC_SENSITIVITY / 1000.0f;
-      float acc_z_g = acc_z_raw * ACC_SENSITIVITY / 1000.0f;
+      float32_t acc_x_g = acc_x_raw * ACC_SENSITIVITY / 1000.0f;
+      float32_t acc_y_g = acc_y_raw * ACC_SENSITIVITY / 1000.0f;
+      float32_t acc_z_g = acc_z_raw * ACC_SENSITIVITY / 1000.0f;
       
       // Convert gyroscope values from raw to dps
-      float gyro_x_dps = gyro_x_raw * GYRO_SENSITIVITY / 1000.0f;
-      float gyro_y_dps = gyro_y_raw * GYRO_SENSITIVITY / 1000.0f;
-      float gyro_z_dps = gyro_z_raw * GYRO_SENSITIVITY / 1000.0f;
+      float32_t gyro_x_dps = gyro_x_raw * GYRO_SENSITIVITY / 1000.0f;
+      float32_t gyro_y_dps = gyro_y_raw * GYRO_SENSITIVITY / 1000.0f;
+      float32_t gyro_z_dps = gyro_z_raw * GYRO_SENSITIVITY / 1000.0f;
 
       //example code of adding for fft input
-      input_fft[i] = gyro_z_dps; 
+      fft_input[i] = gyro_x_dps; 
+    }
+    //prints fft_input
+    printf("Bin\t gyro dps\n");
+    for(int i=0;i<FFT_SIZE;i++){
+      printf(" %d\t\t%.4f\n",i, fft_input[i]);
     }
     //FFT code here
-    for (int i = 0; i < FFT_SIZE; i++) {
-      printf("%f ",input_fft[i]);
-    }
-    printf("\n");
+    /* Process the data through the RFFT module */
+    arm_rfft_fast_f32(&FFT_Instance, fft_input, fft_out, 0);
+
+    /* Process the data through the Complex Magnitude Module */
+    arm_cmplx_mag_f32(fft_out, magnitude, FFT_SIZE/2);
+    show_results(magnitude);
+
     ThisThread::sleep_for(1000ms);
   }
 }
-
-/*
-// Print converted values using printf
-    printf("Accel [g]: X=%+6.3f, Y=%+6.3f, Z=%+6.3f | Gyro [dps]: X=%+7.2f, Y=%+7.2f, Z=%+7.2f\r\n", 
-          acc_x_g, acc_y_g, acc_z_g, gyro_x_dps, gyro_y_dps, gyro_z_dps);
-    
-    // Output Teleplot format directly with printf
-    printf(">acc_x:%.3f\n>acc_y:%.3f\n>acc_z:%.3f\n"">gyro_x:%.2f\n>gyro_y:%.2f\n>gyro_z:%.2f\n",
-            acc_x_g, acc_y_g, acc_z_g, gyro_x_dps, gyro_y_dps, gyro_z_dps);
-    
-*/
