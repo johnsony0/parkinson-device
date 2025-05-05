@@ -29,7 +29,7 @@ I2C i2c(PB_11, PB_10);  // I2C2: SDA = PB11, SCL = PB10
 //the LSM6DSL data rate closest is 26Hz
 #define SAMPLE_DURATION 3000ms
 
-arm_rfft_fast_instance_f32 FFT_Instance;
+arm_cfft_instance_f32 FFT_Instance;
 
 // Write a value to a register
 void write_register(uint8_t reg, uint8_t value) {
@@ -52,20 +52,20 @@ int16_t read_16bit_value(uint8_t low_reg, uint8_t high_reg) {
   return (high_byte << 8) | low_byte;
 }
 
-void show_results(float *magnitude) {
+void show_results(float32_t* fft_out, float32_t *magnitude) {
   float32_t resolution = SAMPLE_RATE / FFT_SIZE;
   float32_t maxValue;
   uint32_t maxIndex;
 
-  arm_max_f32(magnitude, FFT_SIZE/2, &maxValue, &maxIndex);
+  arm_max_f32(fft_out, FFT_SIZE/2, &maxValue, &maxIndex);
   
   printf("Max magnitude: %.1f at bin %lu (%.2f Hz)\r\n", 
   maxValue, maxIndex, maxIndex * resolution);
 
-  printf("Bin\tFreq (Hz)\tMagnitude\n");
- for (int i = 0; i < FFT_SIZE; i++) { // Show bins for debugging
-  printf(" %d\t%.2f\t\t%.4f\n",i, i * resolution, magnitude[i]);
- }
+  /*printf("Bin\tFreq (Hz)\tMagnitude\n");
+  for (int i = 0; i < FFT_SIZE; i++) { // Show bins for debugging
+    printf(" %d\t%.2f\t\t%.4f\n",i, i * resolution, magnitude[i]);
+  }*/
 }
 
 int main() {
@@ -93,14 +93,13 @@ int main() {
   const float ACC_SENSITIVITY = 0.061f;  // mg/LSB for ±2g range
   const float GYRO_SENSITIVITY = 8.75f;  // mdps/LSB for ±250 dps range
   
-  //tentative idea, collect data on each axis, and do an fft on each
-  //and if any are within the ranges, we signal it. Or we can aggregate/avg
-  //all 3 axis. Unsure which is better. imo aggregating is better. Another
-  //idea is sensor fusion, to combine data of all 6.
+  //tentative idea, collect data on each axis, append it to one large array
+  //run an fft and if any are within the ranges, we signal it. 
+  //Or we can aggregate/avg all 3 axis. Unsure which is better. 
+  //Or other ideas. Not sure how to best decipher frequency from 3 axis.
 
   // Initialize the FFT instance
-  arm_status status = arm_rfft_fast_init_f32(&FFT_Instance, FFT_SIZE);
-  
+  arm_status status = arm_cfft_init_f32(&FFT_Instance, FFT_SIZE);
 
   // Main loop
   while (1) {
@@ -132,19 +131,20 @@ int main() {
       //example code of adding for fft input
       fft_input[i] = gyro_x_dps; 
     }
-    //prints fft_input
-    printf("Bin\t gyro dps\n");
+    //prints fft_input for debugging
+    /*printf("Bin\t gyro dps\n");
     for(int i=0;i<FFT_SIZE;i++){
       printf(" %d\t\t%.4f\n",i, fft_input[i]);
-    }
+    }*/
     //FFT code here
     /* Process the data through the RFFT module */
-    arm_rfft_fast_f32(&FFT_Instance, fft_input, fft_out, 0);
+    arm_cfft_f32(&FFT_Instance, fft_input, 0, 0);
 
     /* Process the data through the Complex Magnitude Module */
-    arm_cmplx_mag_f32(fft_out, magnitude, FFT_SIZE/2);
-    show_results(magnitude);
+    arm_cmplx_mag_f32(fft_input, fft_out, FFT_SIZE);
+    show_results(fft_out, magnitude);
 
     ThisThread::sleep_for(1000ms);
   }
+  return 0;
 }
