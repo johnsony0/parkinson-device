@@ -59,6 +59,37 @@ void fill_fft_input() {
     }
 }
 
+// Symptom classification and intensity quantification
+void classify_symptom(float tremor_energy, float dyskinesia_energy) {
+    const float detection_threshold = 10.0f;
+
+    const char* symptom = "None";
+    const char* intensity = "None";
+    float dominant_energy = 0.0f;
+
+    if (tremor_energy > detection_threshold && tremor_energy > dyskinesia_energy) {
+        symptom = "Tremor";
+        dominant_energy = tremor_energy;
+    } else if (dyskinesia_energy > detection_threshold) {
+        symptom = "Dyskinesia";
+        dominant_energy = dyskinesia_energy;
+    }
+
+    if (strcmp(symptom, "None") != 0) {
+        if (dominant_energy < 20.0f) {
+            intensity = "Low";
+        } else if (dominant_energy < 50.0f) {
+            intensity = "Medium";
+        } else {
+            intensity = "High";
+        }
+    }
+
+    printf("Symptom: %s\n", symptom);
+    printf("Intensity: %s\n", intensity);
+}
+
+
 void perform_fft_and_classify() {
     fill_fft_input();
 
@@ -82,8 +113,9 @@ void perform_fft_and_classify() {
     printf("Tremor Energy (3–5Hz): %.3f\n", tremor_energy);
     printf("Dyskinesia Energy (5–7Hz): %.3f\n", dyskinesia_energy);
 
-    // TODO: Replace this with actual function to pass values to Member C
+    // Replace this with actual function to pass values to Member C
     // send_to_classifier(tremor_energy, dyskinesia_energy);
+    classify_symptom(tremor_energy, dyskinesia_energy);
 }
 
 int main() {
