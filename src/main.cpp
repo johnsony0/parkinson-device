@@ -1,3 +1,5 @@
+
+#include <iostream>
 #include <mbed.h>
 #include <arm_math.h>
 
@@ -20,16 +22,12 @@ I2C i2c(PB_11, PB_10);  // I2C2: SDA = PB11, SCL = PB10
 #define OUTZ_L_G    0x26  // Gyro Z-axis (low byte)
 #define OUTZ_H_G    0x27  // Gyro Z-axis (high byte)
 
-#define FFT_SIZE 312
-//26 samples per second, we store in intervals of 3 seconds
-#define SAMPLE_RATE 104.0f
-//Our max sampling rate required is 7Hz
-//need double that for Sampling Theorem
-//for a minimum rate of 14Hz, however
-//the LSM6DSL data rate closest is 26Hz
+#define FFT_SIZE 256
+#define SAMPLE_RATE 104
+#define SAMPLE_RATE_HEX 0x40
 #define SAMPLE_DURATION 3000ms
 
-arm_cfft_instance_f32 FFT_Instance;
+arm_rfft_fast_instance_f32 FFT_Instance;
 
 // Write a value to a register
 void write_register(uint8_t reg, uint8_t value) {
@@ -52,28 +50,28 @@ int16_t read_16bit_value(uint8_t low_reg, uint8_t high_reg) {
   return (high_byte << 8) | low_byte;
 }
 
-void show_results(float32_t* fft_out, float32_t *magnitude) {
-  float32_t resolution = SAMPLE_RATE / FFT_SIZE;
-  float32_t maxValue;
-  uint32_t maxIndex;
+float32_t get_results(float32_t *magnitude) {
+  float32_t resolution = (float)SAMPLE_RATE / (float)FFT_SIZE;
+  float32_t maxValue = 0;
+  uint32_t maxIndex = 0;
 
-  arm_max_f32(fft_out, FFT_SIZE/2, &maxValue, &maxIndex);
+  for (int i = 1; i < FFT_SIZE / 2; i++) {
+    if(magnitude[i] > maxValue) {
+      maxValue = magnitude[i];
+      maxIndex = i;
+    }
+  }
   
-  printf("Max magnitude: %.1f at bin %lu (%.2f Hz)\r\n", 
-  maxValue, maxIndex, maxIndex * resolution);
-
-  /*printf("Bin\tFreq (Hz)\tMagnitude\n");
-  for (int i = 0; i < FFT_SIZE; i++) { // Show bins for debugging
-    printf(" %d\t%.2f\t\t%.4f\n",i, i * resolution, magnitude[i]);
-  }*/
+  /*printf("\n Max magnitude: %.1f at bin %lu (%.2f Hz)\r\n", 
+  maxValue, maxIndex, resolution * maxIndex);*/
+  
+  return resolution * maxIndex;
 }
 
 int main() {
-  // Setup I2C at 400kHz
+  // Configurations
   i2c.frequency(400000);
-  
-  // Check if sensor is connected
-  uint8_t id = read_register(WHO_AM_I);
+    uint8_t id = read_register(WHO_AM_I);
   printf("WHO_AM_I = 0x%02X (Expected: 0x6A)\r\n", id);
 
   if (id != 0x6A) {
@@ -81,68 +79,61 @@ int main() {
     while (1) { /* Stop here */ }
   }
 
-  // Configure the accelerometer (104 Hz, ±2g range)
-  write_register(CTRL1_XL, 0x40);
+  // Configure the accelerometer (208 Hz, ±2g range)
+  write_register(CTRL1_XL, SAMPLE_RATE_HEX);
   printf("Accelerometer configured: 26 Hz, ±2g range\r\n");
   
-  // Configure the gyroscope (104 Hz, ±250 dps range)
-  write_register(CTRL2_G, 0x40);
+  // Configure the gyroscope (208 Hz, ±250 dps range)
+  write_register(CTRL2_G, SAMPLE_RATE_HEX);
   printf("Gyroscope configured: 26 Hz, ±250 dps range\r\n");
   
   // Conversion factors for ±2g and ±250 dps
-  const float ACC_SENSITIVITY = 0.061f;  // mg/LSB for ±2g range
   const float GYRO_SENSITIVITY = 8.75f;  // mdps/LSB for ±250 dps range
-  
-  //tentative idea, collect data on each axis, append it to one large array
-  //run an fft and if any are within the ranges, we signal it. 
-  //Or we can aggregate/avg all 3 axis. Unsure which is better. 
-  //Or other ideas. Not sure how to best decipher frequency from 3 axis.
 
   // Initialize the FFT instance
-  arm_status status = arm_cfft_init_f32(&FFT_Instance, FFT_SIZE);
+  arm_status status = arm_rfft_fast_init_f32(&FFT_Instance, FFT_SIZE);
+  if (status != ARM_MATH_SUCCESS) {
+    printf("Error: RFFT initialization failed!\r\n");
+    while (1){
+      printf("Error: RFFT initialization failed!\r\n");
+    }; // Or some other error handling
+  }
 
   // Main loop
   while (1) {
+    float32_t gyro_x[FFT_SIZE];
+    float32_t gyro_y[FFT_SIZE];
+    float32_t gyro_z[FFT_SIZE];
+
     float32_t fft_input[FFT_SIZE];
     float32_t fft_out[FFT_SIZE];
     float32_t magnitude[FFT_SIZE/2];
-    //grab FFT_SIZE data points, capture 3 second intervals of data with 104Hz sampling rate
+
     for(int i=0;i<FFT_SIZE;i++){
-      // Read raw accelerometer values
-      int16_t acc_x_raw = read_16bit_value(OUTX_L_XL, OUTX_H_XL);
-      int16_t acc_y_raw = read_16bit_value(OUTY_L_XL, OUTY_H_XL);
-      int16_t acc_z_raw = read_16bit_value(OUTZ_L_XL, OUTZ_H_XL);
       
       // Read raw gyroscope values
       int16_t gyro_x_raw = read_16bit_value(OUTX_L_G, OUTX_H_G);
       int16_t gyro_y_raw = read_16bit_value(OUTY_L_G, OUTY_H_G);
       int16_t gyro_z_raw = read_16bit_value(OUTZ_L_G, OUTZ_H_G);
-      
-      // Convert accelerometer values from raw to g
-      float32_t acc_x_g = acc_x_raw * ACC_SENSITIVITY / 1000.0f;
-      float32_t acc_y_g = acc_y_raw * ACC_SENSITIVITY / 1000.0f;
-      float32_t acc_z_g = acc_z_raw * ACC_SENSITIVITY / 1000.0f;
-      
+
       // Convert gyroscope values from raw to dps
-      float32_t gyro_x_dps = gyro_x_raw * GYRO_SENSITIVITY / 1000.0f;
-      float32_t gyro_y_dps = gyro_y_raw * GYRO_SENSITIVITY / 1000.0f;
-      float32_t gyro_z_dps = gyro_z_raw * GYRO_SENSITIVITY / 1000.0f;
+      gyro_x[i] = gyro_x_raw * GYRO_SENSITIVITY / 1000.0f;
+      gyro_y[i] = gyro_y_raw * GYRO_SENSITIVITY / 1000.0f;
+      gyro_z[i] = gyro_z_raw * GYRO_SENSITIVITY / 1000.0f;
 
-      //example code of adding for fft input
-      fft_input[i] = gyro_x_dps; 
+      fft_input[i] = sqrtf(gyro_x[i] * gyro_x[i] + gyro_y[i] * gyro_y[i] + gyro_z[i] * gyro_z[i]);
     }
-    //prints fft_input for debugging
-    /*printf("Bin\t gyro dps\n");
-    for(int i=0;i<FFT_SIZE;i++){
-      printf(" %d\t\t%.4f\n",i, fft_input[i]);
-    }*/
-    //FFT code here
-    /* Process the data through the RFFT module */
-    arm_cfft_f32(&FFT_Instance, fft_input, 0, 0);
+    arm_rfft_fast_f32(&FFT_Instance, fft_input,fft_out, 0);      
+    arm_cmplx_mag_f32(fft_out, magnitude, FFT_SIZE/2);
 
-    /* Process the data through the Complex Magnitude Module */
-    arm_cmplx_mag_f32(fft_input, fft_out, FFT_SIZE);
-    show_results(fft_out, magnitude);
+    float32_t freq = get_results(magnitude);
+    if (freq >= 3.0f && freq < 5.0f) {
+      printf("Classification: Tremor\r\n");
+    } else if (freq >= 5.0f && freq < 7.0f) {
+      printf("Classification: Dyskinesia\r\n");
+    } else {
+      printf("Classification: Neither (dominant frequency outside target ranges)\r\n");
+    }
 
     ThisThread::sleep_for(1000ms);
   }
