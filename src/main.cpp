@@ -139,3 +139,14 @@ int main() {
   }
   return 0;
 }
+
+int main() {
+    int16_t x[FFT_SIZE], y[FFT_SIZE], z[FFT_SIZE];
+
+    while (true) {
+        collect_data(x, y, z);
+        compute_magnitude(x, y, z);
+        FFTResult result = perform_fft_and_classify();
+        indicate_with_leds(result);
+    }
+}
