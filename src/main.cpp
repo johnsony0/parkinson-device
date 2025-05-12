@@ -137,6 +137,76 @@ int main() {
       printf(" %d\t\t%.4f\n",i, fft_input[i]);
     }*/
     //FFT code here
+    struct FFTResult {
+    float tremorEnergy;
+    float dyskinesiaEnergy;
+};
+
+// Collect 3 seconds of XYZ accelerometer data
+void collect_data(int16_t *x, int16_t *y, int16_t *z) {
+    for (int i = 0; i < FFT_SIZE; i++) {
+        x[i] = read_16bit_value(OUTX_L_XL, OUTX_H_XL);
+        y[i] = read_16bit_value(OUTY_L_XL, OUTY_H_XL);
+        z[i] = read_16bit_value(OUTZ_L_XL, OUTZ_H_XL);
+        thread_sleep_for(1000 * 3 / FFT_SIZE);  // ~9.6ms interval for 104Hz
+    }
+}
+
+// Convert XYZ to magnitude
+void compute_magnitude(int16_t *x, int16_t *y, int16_t *z) {
+    for (int i = 0; i < FFT_SIZE; i++) {
+        float fx = (float)x[i];
+        float fy = (float)y[i];
+        float fz = (float)z[i];
+        magnitude_data[i] = sqrtf(fx * fx + fy * fy + fz * fz);
+    }
+}
+
+void fill_fft_input() {
+    for (int i = 0; i < FFT_SIZE; i++) {
+        fft_input[2 * i] = magnitude_data[i];
+        fft_input[2 * i + 1] = 0.0f;
+    }
+}
+
+// Perform FFT and return result
+FFTResult perform_fft_and_classify() {
+    fill_fft_input();
+
+    arm_cfft_init_f32(&S, FFT_SIZE);
+    arm_cfft_f32(&S, fft_input, 0, 1);
+    arm_cmplx_mag_f32(fft_input, fft_output, FFT_SIZE);
+
+    float tremor_energy = 0.0f;
+    float dyskinesia_energy = 0.0f;
+
+    for (int i = 1; i < FFT_SIZE / 2; i++) {
+        float freq = (SAMPLE_RATE * i) / FFT_SIZE;
+        if (freq >= 3.0f && freq <= 5.0f) {
+            tremor_energy += fft_output[i];
+        } else if (freq > 5.0f && freq <= 7.0f) {
+            dyskinesia_energy += fft_output[i];
+        }
+    }
+
+    FFTResult result = { tremor_energy, dyskinesia_energy };
+    return result;
+}
+
+// Map energy to LED blink
+void indicate_with_leds(FFTResult result) {
+    int tremor_level = result.tremorEnergy > 3000 ? 3 : result.tremorEnergy > 1500 ? 2 : result.tremorEnergy > 500 ? 1 : 0;
+    int dysk_level   = result.dyskinesiaEnergy > 3000 ? 3 : result.dyskinesiaEnergy > 1500 ? 2 : result.dyskinesiaEnergy > 500 ? 1 : 0;
+
+    for (int i = 0; i < 3; i++) {
+        led_tremor = (i < tremor_level);
+        led_dyskinesia = (i < dysk_level);
+        thread_sleep_for(200);
+        led_tremor = 0;
+        led_dyskinesia = 0;
+        thread_sleep_for(100);
+    }
+}
     /* Process the data through the RFFT module */
     arm_cfft_f32(&FFT_Instance, fft_input, 0, 0);
 
