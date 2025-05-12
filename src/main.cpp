@@ -22,10 +22,22 @@ I2C i2c(PB_11, PB_10);  // I2C2: SDA = PB11, SCL = PB10
 #define OUTZ_L_G    0x26  // Gyro Z-axis (low byte)
 #define OUTZ_H_G    0x27  // Gyro Z-axis (high byte)
 
-#define FFT_SIZE 256
-#define SAMPLE_RATE 104
-#define SAMPLE_RATE_HEX 0x40
+#define FFT_SIZE 128
+#define SAMPLE_RATE 52
+#define SAMPLE_RATE_HEX 0x30
 #define SAMPLE_DURATION 3000ms
+
+struct FFTResult {
+  float32_t tremorEnergy;
+  float32_t dyskinesiaEnergy;
+};
+FFTResult freq;
+
+// LED Pins for Feedback
+Thread thread_tremor;
+Thread thread_dyskinesia;
+DigitalOut led_tremor(LED2);       // Tremor Indicator 
+DigitalOut led_dyskinesia(LED3);   // Dyskinesia Indicator 
 
 arm_rfft_fast_instance_f32 FFT_Instance;
 
@@ -50,22 +62,90 @@ int16_t read_16bit_value(uint8_t low_reg, uint8_t high_reg) {
   return (high_byte << 8) | low_byte;
 }
 
-float32_t get_results(float32_t *magnitude) {
+void show_results(float32_t *magnitude){
   float32_t resolution = (float)SAMPLE_RATE / (float)FFT_SIZE;
   float32_t maxValue = 0;
   uint32_t maxIndex = 0;
 
   for (int i = 1; i < FFT_SIZE / 2; i++) {
-    if(magnitude[i] > maxValue) {
+    if (magnitude[i] > maxValue) {
       maxValue = magnitude[i];
       maxIndex = i;
+    }
+  }
+
+  printf("\n Max magnitude: %.1f at bin %lu (%.2f Hz)\r\n", maxValue, maxIndex, resolution*maxIndex);
+}
+
+void get_results(float32_t *magnitude) {
+  float32_t tremor_energy = 0.0f;
+  float32_t dyskinesia_energy = 0.0f;
+
+  for (int i = 1; i < FFT_SIZE / 2; i++) {
+    float32_t freq = ((float)SAMPLE_RATE * i) / (float)FFT_SIZE;
+    if (freq >= 3.0f && freq <= 5.0f) {
+      tremor_energy += magnitude[i];
+    } else if (freq > 5.0f && freq <= 7.0f) {
+      dyskinesia_energy += magnitude[i];
     }
   }
   
   /*printf("\n Max magnitude: %.1f at bin %lu (%.2f Hz)\r\n", 
   maxValue, maxIndex, resolution * maxIndex);*/
   
-  return resolution * maxIndex;
+  freq = {tremor_energy, dyskinesia_energy};
+}
+
+void display_results() {
+  while(1){
+    int tremor_level = freq.tremorEnergy > 3000 ? 3 : freq.tremorEnergy > 1500 ? 2 : freq.tremorEnergy > 500 ? 1 : 0;
+    int dysk_level   = freq.dyskinesiaEnergy > 3000 ? 3 : freq.dyskinesiaEnergy > 1500 ? 2 : freq.dyskinesiaEnergy > 500 ? 1 : 0;
+    if (tremor_level && dysk_level){ //both levels are not 0
+      if (tremor_level > dysk_level){  //tremor clearly greater
+        led_tremor = 1;
+      } else if (tremor_level < dysk_level){ //dysk clearly greater
+        led_dyskinesia = 1;
+      } else if (tremor_level == dysk_level){ //neither significantly different
+        led_tremor = 1;
+        led_dyskinesia = 1;
+      }
+    } else {
+      led_tremor = 0;
+    led_dyskinesia = 0;
+    }
+  }
+}
+
+void tremor_display(){
+  while(1){
+    int tremor_level = freq.tremorEnergy > 3000 ? 6 : freq.tremorEnergy > 2500 ? 5 : freq.tremorEnergy > 2000 ? 4 : freq.tremorEnergy > 1500 ? 3 : freq.tremorEnergy > 1000 ? 2 : freq.tremorEnergy > 500 ? 1 : 0;
+    if(tremor_level>0){
+      chrono::milliseconds tremor_delay = 500ms/(tremor_level); //blink speed based on intensity
+      led_tremor = 1;
+      ThisThread::sleep_for(tremor_delay);
+      led_tremor = 0;
+      ThisThread::sleep_for(tremor_delay);
+    } else {
+      led_tremor = 0;
+      ThisThread::sleep_for(500ms);
+    }
+  }
+}
+
+void dyskinesia_display(){
+  while(1){
+    int dyskinesia_level = freq.dyskinesiaEnergy > 3000 ? 6 : freq.dyskinesiaEnergy > 2500 ? 5 : freq.dyskinesiaEnergy > 2000 ? 4 : freq.dyskinesiaEnergy > 1500 ? 3 : freq.dyskinesiaEnergy > 1000 ? 2 : freq.dyskinesiaEnergy > 500 ? 1 : 0;
+    if(dyskinesia_level>0){
+      chrono::milliseconds dyskinesia_delay = 500ms/(dyskinesia_level); //blink speed based on intensity
+      led_dyskinesia = 1;
+      ThisThread::sleep_for(dyskinesia_delay);
+      led_dyskinesia = 0;
+      ThisThread::sleep_for(dyskinesia_delay);
+    } else {
+      led_dyskinesia = 0;
+      ThisThread::sleep_for(500ms);
+    }
+  }
 }
 
 int main() {
@@ -99,8 +179,13 @@ int main() {
     }; // Or some other error handling
   }
 
+  //start threads that display either conditions and intensity
+  thread_tremor.start(tremor_display);
+  thread_dyskinesia.start(dyskinesia_display);
+
   // Main loop
   while (1) {
+    //Initialize arrays
     float32_t gyro_x[FFT_SIZE];
     float32_t gyro_y[FFT_SIZE];
     float32_t gyro_z[FFT_SIZE];
@@ -110,7 +195,6 @@ int main() {
     float32_t magnitude[FFT_SIZE/2];
 
     for(int i=0;i<FFT_SIZE;i++){
-      
       // Read raw gyroscope values
       int16_t gyro_x_raw = read_16bit_value(OUTX_L_G, OUTX_H_G);
       int16_t gyro_y_raw = read_16bit_value(OUTY_L_G, OUTY_H_G);
@@ -123,30 +207,15 @@ int main() {
 
       fft_input[i] = sqrtf(gyro_x[i] * gyro_x[i] + gyro_y[i] * gyro_y[i] + gyro_z[i] * gyro_z[i]);
     }
+
     arm_rfft_fast_f32(&FFT_Instance, fft_input,fft_out, 0);      
     arm_cmplx_mag_f32(fft_out, magnitude, FFT_SIZE/2);
+    //show_results(magnitude);
+    get_results(magnitude);
+    printf("\n Tremor Energy: %.1f, Dyskinesia Energy: %.1f \n", freq.tremorEnergy, freq.dyskinesiaEnergy);
+    //display_results(freq);
 
-    float32_t freq = get_results(magnitude);
-    if (freq >= 3.0f && freq < 5.0f) {
-      printf("Classification: Tremor\r\n");
-    } else if (freq >= 5.0f && freq < 7.0f) {
-      printf("Classification: Dyskinesia\r\n");
-    } else {
-      printf("Classification: Neither (dominant frequency outside target ranges)\r\n");
-    }
-
-    ThisThread::sleep_for(1000ms);
+    ThisThread::sleep_for(500ms);
   }
   return 0;
-}
-
-int main() {
-    int16_t x[FFT_SIZE], y[FFT_SIZE], z[FFT_SIZE];
-
-    while (true) {
-        collect_data(x, y, z);
-        compute_magnitude(x, y, z);
-        FFTResult result = perform_fft_and_classify();
-        indicate_with_leds(result);
-    }
 }
